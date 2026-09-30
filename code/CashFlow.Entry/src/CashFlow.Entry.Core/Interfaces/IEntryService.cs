@@ -1,10 +1,11 @@
+using CashFlow.Entry.Core.Models;
 using EntryEntity = CashFlow.Entry.Domain.Entities.Entry;
 
 namespace CashFlow.Entry.Core.Interfaces;
 
-public interface IEntryRepository
+public interface IEntryService
 {
-    Task AddAsync(
-        EntryEntity entry,
+    Task<EntryEntity> CreateAsync(
+        CreateEntryRequest request,
         CancellationToken cancellationToken = default);
 }

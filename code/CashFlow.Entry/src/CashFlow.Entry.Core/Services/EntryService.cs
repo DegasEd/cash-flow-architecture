@@ -1,10 +1,11 @@
 using CashFlow.Entry.Core.Interfaces;
 using CashFlow.Entry.Core.Models;
 using EntryEntity = CashFlow.Entry.Domain.Entities.Entry;
+using CashFlow.Entry.Repository.Interfaces;
 
 namespace CashFlow.Entry.Core.Services;
 
-public class EntryService
+public class EntryService : IEntryService
 {
     private readonly IEntryRepository _entryRepository;
 
