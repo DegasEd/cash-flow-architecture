@@ -1,3 +1,4 @@
+using System.Text.Json;
 using Dapper;
 using Npgsql;
 using CashFlow.Entry.Repository.Interfaces;
@@ -18,7 +19,7 @@ public class EntryRepository : IEntryRepository
         EntryEntity entry,
         CancellationToken cancellationToken = default)
     {
-        const string sql = """
+        const string insertEntrySql = """
             INSERT INTO launch.entry
             (
                 id,
@@ -39,20 +40,84 @@ public class EntryRepository : IEntryRepository
             );
             """;
 
-        await using var connection = new NpgsqlConnection(_connectionString);
+        const string insertOutboxSql = """
+            INSERT INTO launch.outbox_event
+            (
+                id,
+                entry_id,
+                event_type,
+                payload,
+                created_at,
+                published_at
+            )
+            VALUES
+            (
+                @Id,
+                @EntryId,
+                @EventType,
+                CAST(@Payload AS jsonb),
+                @CreatedAt,
+                NULL
+            );
+            """;
 
-        await connection.ExecuteAsync(
-            new CommandDefinition(
-                sql,
-                new
-                {
-                    entry.Id,
-                    entry.AmountInCents,
-                    Type = entry.Type.ToString().ToUpperInvariant(),
-                    entry.OccurredAt,
-                    entry.CreatedAt,
-                    entry.UpdatedAt
-                },
-                cancellationToken: cancellationToken));
+        var outboxEventId = Guid.NewGuid();
+
+        var payload = JsonSerializer.Serialize(new
+        {
+            EventId = outboxEventId,
+            EntryId = entry.Id,
+            entry.AmountInCents,
+            Type = entry.Type.ToString(),
+            entry.OccurredAt,
+            entry.CreatedAt
+        });
+
+        await using var connection =
+            new NpgsqlConnection(_connectionString);
+
+        await connection.OpenAsync(cancellationToken);
+
+        await using var transaction =
+            await connection.BeginTransactionAsync(cancellationToken);
+
+        try
+        {
+            await connection.ExecuteAsync(
+                new CommandDefinition(
+                    insertEntrySql,
+                    new
+                    {
+                        entry.Id,
+                        entry.AmountInCents,
+                        Type = entry.Type.ToString().ToUpperInvariant(),
+                        entry.OccurredAt,
+                        entry.CreatedAt,
+                        entry.UpdatedAt
+                    },
+                    transaction,
+                    cancellationToken: cancellationToken));
+
+            await connection.ExecuteAsync(
+                new CommandDefinition(
+                    insertOutboxSql,
+                    new
+                    {
+                        Id = outboxEventId,
+                        EntryId = entry.Id,
+                        EventType = "EntryCreated",
+                        Payload = payload,
+                        CreatedAt = DateTime.UtcNow
+                    },
+                    transaction,
+                    cancellationToken: cancellationToken));
+
+            await transaction.CommitAsync(cancellationToken);
+        }
+        catch
+        {
+            await transaction.RollbackAsync(cancellationToken);
+            throw;
+        }
     }
 }
