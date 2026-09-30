@@ -11,7 +11,7 @@
   </ItemGroup>
 
   <ItemGroup>
-    <ProjectReference Include="..\CashFlow.Launch.Core\CashFlow.Launch.Core.csproj" />
+    <ProjectReference Include="..\CashFlow.Entry.Core\CashFlow.Entry.Core.csproj" />
   </ItemGroup>
 
 </Project>

@@ -1,8 +1,8 @@
 ﻿<Project Sdk="Microsoft.NET.Sdk">
 
   <ItemGroup>
-    <ProjectReference Include="..\CashFlow.Launch.Domain\CashFlow.Launch.Domain.csproj" />
-    <ProjectReference Include="..\CashFlow.Launch.Repository\CashFlow.Launch.Repository.csproj" />
+    <ProjectReference Include="..\CashFlow.Entry.Domain\CashFlow.Entry.Domain.csproj" />
+    <ProjectReference Include="..\CashFlow.Entry.Repository\CashFlow.Entry.Repository.csproj" />
   </ItemGroup>
 
   <PropertyGroup>

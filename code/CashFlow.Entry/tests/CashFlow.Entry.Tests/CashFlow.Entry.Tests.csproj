@@ -19,8 +19,8 @@
   </ItemGroup>
 
   <ItemGroup>
-    <ProjectReference Include="..\..\src\CashFlow.Launch.Api\CashFlow.Launch.Api.csproj" />
-    <ProjectReference Include="..\..\src\CashFlow.Launch.Core\CashFlow.Launch.Core.csproj" />
+    <ProjectReference Include="..\..\src\CashFlow.Entry.Api\CashFlow.Entry.Api.csproj" />
+    <ProjectReference Include="..\..\src\CashFlow.Entry.Core\CashFlow.Entry.Core.csproj" />
   </ItemGroup>
 
 </Project>
