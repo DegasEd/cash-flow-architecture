@@ -36,10 +36,12 @@ PostgreSQL
      entry-events
           |
           v
-Consolidation Processor
+CashFlow.ConsolidationProcessor
           |
+          | local database transaction
           v
 PostgreSQL
+  ├── consolidation.processed_event
   └── consolidation.daily_consolidation
           |
           v
@@ -74,6 +76,10 @@ The current implementation includes:
 - Transactional Outbox persistence
 - Outbox Publisher Worker
 - asynchronous publication to Apache Kafka
+- Consolidation Processor Worker
+- idempotent event processing
+- atomic daily consolidation updates
+- manual Kafka offset commit after successful processing
 - PostgreSQL local infrastructure
 - pgAdmin
 - Apache Kafka running in KRaft mode
@@ -83,9 +89,8 @@ The current implementation includes:
 - shared Aspire service defaults
 - health checks and observability foundation
 
-The following components are part of the architecture but are not yet implemented:
+The following component is part of the architecture but is not yet implemented:
 
-- Consolidation Processor
 - Consolidation Query API
 
 ---
@@ -109,6 +114,14 @@ cash-flow-architecture/
 │   │   │   ├── CashFlow.Outbox.Core/
 │   │   │   ├── CashFlow.Outbox.Repository/
 │   │   │   └── CashFlow.Outbox.Domain/
+│   │   └── tests/
+│   │
+│   ├── CashFlow.ConsolidationProcessor/
+│   │   ├── src/
+│   │   │   ├── CashFlow.ConsolidationProcessor.Worker/
+│   │   │   ├── CashFlow.ConsolidationProcessor.Core/
+│   │   │   ├── CashFlow.ConsolidationProcessor.Repository/
+│   │   │   └── CashFlow.ConsolidationProcessor.Domain/
 │   │   └── tests/
 │   │
 │   ├── CashFlow.AppHost/
@@ -382,6 +395,241 @@ PostgreSQL published_at:   recorded
 The produced Kafka message was also inspected through Kafka UI, confirming the expected `EntryId` message key and serialized `EntryCreated` payload.
 
 This validates the implemented path from durable transactional persistence to asynchronous event publication.
+
+---
+
+## CashFlow.ConsolidationProcessor
+
+`CashFlow.ConsolidationProcessor` consumes `EntryCreated` integration events and incrementally maintains the daily consolidated balance.
+
+The application follows the same explicit layered organization:
+
+```text
+CashFlow.ConsolidationProcessor.Worker
+CashFlow.ConsolidationProcessor.Core
+CashFlow.ConsolidationProcessor.Repository
+CashFlow.ConsolidationProcessor.Domain
+```
+
+Its processing flow is:
+
+```text
+Kafka / entry-events
+        |
+        v
+Consolidation Processor Worker
+        |
+        v
+IConsolidationService
+        |
+        | deserialize + validate
+        v
+ConsolidationService
+        |
+        v
+IConsolidationRepository
+        |
+        v
+PostgreSQL transaction
+        |
+        +--> consolidation.processed_event
+        |
+        +--> consolidation.daily_consolidation
+        |
+        v
+COMMIT
+        |
+        v
+Kafka offset commit
+```
+
+The consumer belongs to the Kafka consumer group:
+
+```text
+cashflow-consolidation
+```
+
+Automatic offset commits are disabled.
+
+A Kafka offset is committed only after the event has been successfully handled by the consolidation persistence transaction.
+
+### Daily Balance Calculation
+
+Credits increase the daily balance:
+
+```text
+Credit → +AmountInCents
+```
+
+Debits decrease the daily balance:
+
+```text
+Debit → -AmountInCents
+```
+
+The daily projection is maintained incrementally.
+
+The Query side therefore does not need to recalculate all financial entries whenever a balance is requested.
+
+For a new event, PostgreSQL performs an atomic UPSERT equivalent to:
+
+```text
+existing daily balance
++
+signed event delta
+=
+new daily balance
+```
+
+The increment occurs inside PostgreSQL rather than through a read-modify-write operation in application memory.
+
+This allows different events for the same date to be processed concurrently without requiring application-level distributed locks or a singleton processor.
+
+### Idempotent Processing
+
+Kafka provides at-least-once delivery semantics for this flow.
+
+An event can therefore be delivered more than once.
+
+Each integration event contains an `EventId`.
+
+Before applying its financial effect, the Processor attempts to register that identifier in:
+
+```text
+consolidation.processed_event
+```
+
+`event_id` is unique.
+
+Processing occurs as one local PostgreSQL transaction:
+
+```text
+BEGIN
+    |
+    v
+INSERT processed_event
+ON CONFLICT DO NOTHING
+    |
+    +--> EventId already exists
+    |       |
+    |       v
+    |    no financial effect
+    |
+    +--> EventId is new
+            |
+            v
+       atomic UPSERT
+       daily_consolidation
+            |
+            v
+COMMIT
+```
+
+If the `EventId` was already processed, the daily balance is not modified again.
+
+This makes event redelivery harmless from the financial perspective.
+
+### Kafka Offset Semantics
+
+The processing order is intentionally:
+
+```text
+Kafka consume
+      |
+      v
+PostgreSQL transaction
+      |
+      v
+ProcessedEvent + DailyConsolidation
+      |
+      v
+PostgreSQL COMMIT
+      |
+      v
+Kafka offset commit
+```
+
+A process failure after consuming the event but before the PostgreSQL transaction commits causes the event to be delivered again.
+
+A process failure after the PostgreSQL transaction commits but before the Kafka offset is committed can also cause redelivery.
+
+In the second scenario, the persisted `EventId` identifies the event as already processed and prevents the daily balance from being modified twice.
+
+The Kafka offset can then safely be committed.
+
+This provides the intended guarantee:
+
+```text
+at-least-once delivery
++
+idempotent financial effect
+```
+
+without requiring a distributed transaction between Kafka and PostgreSQL.
+
+### End-to-End Validation
+
+The Consolidation Processor has been validated against the real local Kafka and PostgreSQL infrastructure.
+
+Before starting the Processor:
+
+```text
+consolidation.processed_event:      0 rows
+consolidation.daily_consolidation:  0 rows
+```
+
+Kafka already contained a previously published `EntryCreated` event representing:
+
+```text
+Type:          Credit
+AmountInCents: 5000
+OccurredAt:    2026-09-30
+```
+
+After starting the Processor, the event was consumed and persisted successfully.
+
+The resulting projection was:
+
+```text
+date        balance_in_cents
+2026-09-30  5000
+```
+
+The corresponding event identifier was also registered in:
+
+```text
+consolidation.processed_event
+```
+
+The validated end-to-end flow is therefore:
+
+```text
+POST /entries
+      |
+      v
+launch.entry
++
+launch.outbox_event
+      |
+      v
+CashFlow.Outbox
+      |
+      v
+Kafka / entry-events
+      |
+      v
+CashFlow.ConsolidationProcessor
+      |
+      v
+processed_event
++
+daily_consolidation
+      |
+      v
+balance_in_cents = 5000
+```
+
+This validates the implemented asynchronous path from durable financial entry creation through Kafka publication to the materialized daily consolidation.
 
 ---
 
@@ -665,6 +913,20 @@ atomic projection updates
 
 This means event redelivery is acceptable, but duplicate financial effects are not.
 
+The implementation now demonstrates both sides of this processing model:
+
+```text
+Producer side
+Entry + Outbox
+same PostgreSQL transaction
+
+Consumer side
+ProcessedEvent + DailyConsolidation
+same PostgreSQL transaction
+```
+
+Kafka remains outside both local database transactions.
+
 The complete failure scenarios and processing guarantees are documented in:
 
 ```text
@@ -697,26 +959,48 @@ These documents capture both implemented decisions and explicitly documented evo
 
 ## Next Implementation Step
 
-The next component is the Consolidation Processor.
+The next and final business application is the Consolidation Query API.
 
-Its responsibility is to:
+Its responsibility is to expose the materialized daily balance without recalculating financial entries during query execution.
+
+The intended query flow is:
 
 ```text
-consume EntryCreated events from Kafka
+GET /consolidations/{date}
         |
         v
-detect previously processed EventId
+Consolidation Query API
         |
         v
-atomically
-        ├── update daily consolidation
-        └── register processed EventId
+Query Service
+        |
+        v
+Query Repository
+        |
+        v
+consolidation.daily_consolidation
+        |
+        v
+HTTP response
 ```
 
-The consumer will operate under at-least-once delivery semantics.
+The Query API will read only the consolidation projection.
 
-Duplicate event delivery is allowed, but duplicate financial effects are not.
+It will not query transactional entries or consume Kafka events.
 
-`ProcessedEvent` registration and the `DailyConsolidation` update will therefore occur in the same PostgreSQL transaction.
+For the currently validated projection, a query for:
 
-After the Consolidation Processor, the final business application will expose the materialized daily consolidation through the Consolidation Query API.
+```text
+2026-09-30
+```
+
+is expected to return a balance equivalent to:
+
+```json
+{
+  "date": "2026-09-30",
+  "balanceInCents": 5000
+}
+```
+
+Completing this component closes the full functional path from financial entry creation to daily consolidated balance retrieval.
