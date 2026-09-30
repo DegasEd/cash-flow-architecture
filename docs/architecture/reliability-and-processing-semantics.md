@@ -164,7 +164,7 @@ O `Consolidation Service` mantém um `ProcessedEvent` para registrar quais event
 
 `ProcessedEvent.EventId` possui uma restrição de unicidade.
 
-O registro do processamento e a alteração do consolidado pertencem à mesma transação local:
+O registro do processamento ocorre antes da alteração do consolidado, e ambas as operações pertencem à mesma transação local:
 
 ```text
 BEGIN
@@ -344,7 +344,7 @@ Aqui os eventos são diferentes e ambos são legítimos.
 Considere:
 
 ```text
-DailyConsolidation.Balance = 1000
+DailyConsolidation.BalanceInCents = 1000
 
 Event ABC = +100
 Event DEF = +50
@@ -369,7 +369,7 @@ Uma implementação em que cada worker leia o saldo, calcule o novo valor na apl
 Com dois workers concorrentes, ambos poderiam ler:
 
 ```text
-Balance = 1000
+BalanceInCents = 1000
 ```
 
 O primeiro calcularia:
@@ -393,37 +393,39 @@ Esse cenário é um `lost update`.
 O resultado poderia terminar em:
 
 ```text
-Balance = 1050
+BalanceInCents = 1050
 ```
 
 quando o correto seria:
 
 ```text
-Balance = 1150
+BalanceInCents = 1150
 ```
 
 ### Decisão: atualização atômica do saldo
 
 Não faremos o cálculo do novo saldo na aplicação utilizando `read-modify-write`.
 
-A alteração será enviada ao banco como uma operação sobre o próprio valor persistido:
+A alteração será enviada ao banco como uma operação sobre o próprio valor persistido.
+
+Para uma projeção já existente, conceitualmente:
 
 ```sql
 UPDATE DailyConsolidation
-SET Balance = Balance + @amount
+SET BalanceInCents = BalanceInCents + @amountInCents
 WHERE Date = @date;
 ```
 
 Assim, um worker executa conceitualmente:
 
 ```text
-Balance = Balance + 100
+BalanceInCents = BalanceInCents + 100
 ```
 
 enquanto outro executa:
 
 ```text
-Balance = Balance + 50
+BalanceInCents = BalanceInCents + 50
 ```
 
 A persistência controla a concorrência sobre a linha.
@@ -500,7 +502,7 @@ e os dois eventos devem ser processados.
 A garantia vem da atualização atômica do saldo:
 
 ```text
-Balance = Balance + delta
+BalanceInCents = BalanceInCents + delta
 ```
 
 O resultado é:
@@ -535,9 +537,7 @@ Não dependemos de `exactly-once delivery`, lock distribuído, serialização gl
 
 ## 12. Primeiro evento do dia
 
-A estratégia apresentada até aqui considera que já existe um `DailyConsolidation` correspondente ao dia processado.
-
-Ainda precisamos tratar um caso adicional:
+Existe um caso adicional: o processamento do primeiro evento de determinada data, quando ainda não existe uma projeção em `DailyConsolidation`.
 
 ```text
 primeiro evento do dia
@@ -545,29 +545,152 @@ primeiro evento do dia
 DailyConsolidation ainda não existe
 ```
 
-O cenário se torna especialmente importante quando dois eventos diferentes são processados simultaneamente antes da criação dessa projeção:
+O cenário se torna especialmente importante quando dois eventos diferentes são processados simultaneamente antes da criação da projeção:
 
 ```text
 Event ABC +100 ──► Worker A ──┐
-                               ├──► DailyConsolidation inexistente
+                              ├──► DailyConsolidation inexistente
 Event DEF  +50 ──► Worker B ──┘
 ```
 
-Nesse caso precisamos garantir simultaneamente que:
+Precisamos garantir simultaneamente que:
 
 ```text
 apenas um DailyConsolidation seja criado
-                  +
+                 +
 os dois eventos produzam seus efeitos
 ```
 
-A estratégia para criação concorrente da primeira projeção diária será definida separadamente.
+### Decisão: chave única por data e criação ou incremento atômico
+
+Para o escopo atual existe apenas um lojista.
+
+Portanto, `DailyConsolidation.Date` identifica unicamente a projeção diária e possui uma restrição de unicidade.
+
+Não será utilizado o padrão:
+
+```text
+verificar se DailyConsolidation existe
+        ↓
+se não existir, inserir
+```
+
+Essa estratégia introduziria uma condição de corrida, pois dois workers poderiam verificar simultaneamente a ausência da linha e ambos tentar criá-la.
+
+A criação e a atualização serão realizadas por uma única operação atômica de **create-or-increment**.
+
+Em PostgreSQL, essa operação pode ser implementada com `INSERT ... ON CONFLICT DO UPDATE`:
+
+```sql
+INSERT INTO DailyConsolidation (Date, BalanceInCents)
+VALUES (@date, @amountInCents)
+ON CONFLICT (Date)
+DO UPDATE
+SET BalanceInCents =
+    DailyConsolidation.BalanceInCents + EXCLUDED.BalanceInCents;
+```
+
+Considere novamente:
+
+```text
+DailyConsolidation = inexistente
+
+Event ABC = +100
+Event DEF = +50
+```
+
+Se `ABC` executar primeiro:
+
+```text
+ABC
+ ↓
+INSERT Date / 100
+ ↓
+DEF encontra conflito em Date
+ ↓
+UPDATE 100 + 50
+ ↓
+150
+```
+
+Se `DEF` executar primeiro:
+
+```text
+DEF
+ ↓
+INSERT Date / 50
+ ↓
+ABC encontra conflito em Date
+ ↓
+UPDATE 50 + 100
+ ↓
+150
+```
+
+Em ambos os casos:
+
+```text
+uma única projeção diária
+        +
+todos os deltas aplicados
+        =
+BalanceInCents = 150
+```
+
+A restrição de unicidade em `Date` arbitra a criação concorrente da projeção, enquanto o `UPSERT` garante que eventos concorrentes legítimos não sejam perdidos.
+
+Essa operação permanece dentro da mesma transação local utilizada para registrar `ProcessedEvent`.
+
+O processamento completo de um evento é, portanto, conceitualmente:
+
+```text
+BEGIN
+
+    INSERT ProcessedEvent(EventId)
+
+    se EventId foi registrado:
+        UPSERT DailyConsolidation
+            criar projeção com delta
+            ou
+            incrementar projeção existente
+
+COMMIT
+```
+
+Com isso, os três cenários relevantes ficam cobertos:
+
+```text
+ABC × ABC
+mesmo evento
+    ↓
+UNIQUE(EventId)
+    ↓
+um efeito financeiro
+
+
+ABC × DEF
+eventos diferentes + projeção existente
+    ↓
+incremento atômico
+    ↓
+nenhum lost update
+
+
+ABC × DEF
+eventos diferentes + projeção inexistente
+    ↓
+UNIQUE(Date) + UPSERT
+    ↓
+uma projeção + todos os efeitos
+```
+
+Não é necessário lock distribuído, worker único ou serialização global para tratar a criação do primeiro consolidado diário.
 
 ---
 
 ## 13. Garantias atuais da solução
 
-Com as decisões tomadas até aqui, a arquitetura estabelece que:
+Com as decisões tomadas, a arquitetura estabelece que:
 
 - um lançamento confirmado permanece registrado mesmo se Kafka ou o `Consolidation Service` estiverem temporariamente indisponíveis;
 - todo lançamento confirmado possui uma intenção de publicação registrada;
@@ -576,11 +699,33 @@ Com as decisões tomadas até aqui, a arquitetura estabelece que:
 - a indisponibilidade do `Consolidation Service` não impede novos lançamentos;
 - redelivery é esperado e suportado;
 - o mesmo `EventId` não produz efeito financeiro mais de uma vez;
-- `ProcessedEvent` e o efeito correspondente no consolidado pertencem à mesma transação;
+- o registro de `ProcessedEvent` ocorre antes da alteração do consolidado dentro da mesma transação;
+- `ProcessedEvent` e o efeito correspondente no consolidado são confirmados atomicamente;
 - eventos diferentes podem alterar concorrentemente um consolidado existente sem `lost update`;
-- não é necessário lock distribuído ou serialização global para garantir esses comportamentos;
+- a criação concorrente do primeiro `DailyConsolidation` é protegida pela unicidade de `Date`;
+- a operação de `UPSERT` cria ou incrementa atomicamente a projeção diária;
+- eventos diferentes concorrentes produzem seus efeitos independentemente da ordem de processamento;
+- não é necessário lock distribuído, worker único ou serialização global para garantir esses comportamentos;
 - depois da recuperação dos componentes e do processamento do backlog, o consolidado converge para o estado correspondente aos lançamentos registrados.
 
-A solução não depende de uma transação distribuída entre o banco do `Launch Service`, Kafka e a persistência do `Consolidation Service`.
+A solução não depende de uma transação distribuída entre a persistência do `Launch Service`, Kafka e a persistência do `Consolidation Service`.
 
-A criação concorrente do primeiro `DailyConsolidation` permanece como decisão pendente.
+As garantias são obtidas pela combinação de:
+
+```text
+Transactional Outbox
+        +
+at-least-once delivery
+        +
+EventId único
+        +
+processamento idempotente
+        +
+transações locais
+        +
+UNIQUE(Date)
+        +
+UPSERT atômico
+```
+
+Assim, a arquitetura aceita redelivery e processamento concorrente como condições normais do sistema, garantindo que essas condições não produzam perda ou duplicidade de efeito financeiro.
