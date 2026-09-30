@@ -51,6 +51,87 @@ services:
       - cashflow-network
 
 
+  kafka:
+    image: apache/kafka:4.1.0
+    container_name: cashflow-kafka
+    restart: unless-stopped
+
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+
+      KAFKA_LISTENERS: CONTROLLER://:29093,INTERNAL://:29092,EXTERNAL://:9092
+      KAFKA_ADVERTISED_LISTENERS: INTERNAL://kafka:29092,EXTERNAL://localhost:9092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,INTERNAL:PLAINTEXT,EXTERNAL:PLAINTEXT
+
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:29093
+      KAFKA_INTER_BROKER_LISTENER_NAME: INTERNAL
+
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+
+    ports:
+      - "9092:9092"
+
+    volumes:
+      - cashflow-kafka-data:/var/lib/kafka/data
+
+    networks:
+      - cashflow-network
+
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "/opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:29092 --list >/dev/null 2>&1"
+        ]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
+
+
+  kafka-init:
+    image: apache/kafka:4.1.0
+    container_name: cashflow-kafka-init
+
+    depends_on:
+      kafka:
+        condition: service_healthy
+
+    volumes:
+      - ./docker/kafka/init.sh:/init.sh:ro
+
+    entrypoint: ["/bin/sh", "/init.sh"]
+
+    networks:
+      - cashflow-network
+
+    restart: "no"
+
+
+  kafka-ui:
+    image: ghcr.io/kafbat/kafka-ui:latest
+    container_name: cashflow-kafka-ui
+    restart: unless-stopped
+
+    environment:
+      KAFKA_CLUSTERS_0_NAME: cashflow
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:29092
+
+    ports:
+      - "8080:8080"
+
+    depends_on:
+      kafka:
+        condition: service_healthy
+
+    networks:
+      - cashflow-network
+
+
 networks:
   cashflow-network:
     name: cashflow-network
@@ -63,3 +144,6 @@ volumes:
 
   cashflow-pgadmin-data:
     name: cashflow-pgadmin-data
+
+  cashflow-kafka-data:
+    name: cashflow-kafka-data
