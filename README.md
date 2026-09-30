@@ -22,14 +22,14 @@ Client
   v
 CashFlow.Entry
   |
-  |  local database transaction
+  | local database transaction
   v
 PostgreSQL
   ├── launch.entry
   └── launch.outbox_event
           |
           v
-     Outbox Publisher
+     CashFlow.Outbox
           |
           v
         Kafka
@@ -72,6 +72,8 @@ The current implementation includes:
 - layered Entry application structure
 - PostgreSQL persistence
 - Transactional Outbox persistence
+- Outbox Publisher Worker
+- asynchronous publication to Apache Kafka
 - PostgreSQL local infrastructure
 - pgAdmin
 - Apache Kafka running in KRaft mode
@@ -83,7 +85,6 @@ The current implementation includes:
 
 The following components are part of the architecture but are not yet implemented:
 
-- Outbox Publisher
 - Consolidation Processor
 - Consolidation Query API
 
@@ -100,6 +101,14 @@ cash-flow-architecture/
 │   │   │   ├── CashFlow.Entry.Core/
 │   │   │   ├── CashFlow.Entry.Domain/
 │   │   │   └── CashFlow.Entry.Repository/
+│   │   └── tests/
+│   │
+│   ├── CashFlow.Outbox/
+│   │   ├── src/
+│   │   │   ├── CashFlow.Outbox.Worker/
+│   │   │   ├── CashFlow.Outbox.Core/
+│   │   │   ├── CashFlow.Outbox.Repository/
+│   │   │   └── CashFlow.Outbox.Domain/
 │   │   └── tests/
 │   │
 │   ├── CashFlow.AppHost/
@@ -245,7 +254,134 @@ Kafka availability is therefore not part of the synchronous Entry API transactio
 
 If Kafka becomes unavailable, financial entries can continue to be accepted while publication remains pending in the outbox.
 
-The Outbox Publisher that drains these records to Kafka is the next application component to be implemented.
+---
+
+## CashFlow.Outbox
+
+`CashFlow.Outbox` is responsible for asynchronously publishing integration events persisted by the Entry application.
+
+The application follows the same explicit layered organization:
+
+```text
+CashFlow.Outbox.Worker
+CashFlow.Outbox.Core
+CashFlow.Outbox.Repository
+CashFlow.Outbox.Domain
+```
+
+Its processing flow is:
+
+```text
+launch.outbox_event
+        |
+        | published_at IS NULL
+        v
+Outbox Worker
+        |
+        v
+IOutboxPublisherService
+        |
+        v
+OutboxPublisherService
+        |
+        +----------------------+
+        |                      |
+        v                      v
+IOutboxRepository         Apache Kafka
+        |                 entry-events
+        v                      |
+PostgreSQL                     |
+                               | broker acknowledgement
+                               v
+                     Mark event as published
+                               |
+                               v
+                 launch.outbox_event.published_at
+```
+
+Pending events are read from PostgreSQL in batches.
+
+Each event is published to the Kafka topic:
+
+```text
+entry-events
+```
+
+The Kafka message key is the financial entry identifier (`EntryId`).
+
+An outbox event is marked as published only after Kafka acknowledges publication.
+
+If Kafka publication fails, the event remains pending with:
+
+```text
+published_at = NULL
+```
+
+and can be retried by the worker.
+
+The Worker continuously checks for pending events, while failures are logged without terminating the background process.
+
+### Delivery Semantics
+
+The Outbox Publisher intentionally does not claim distributed exactly-once processing.
+
+A failure can occur after Kafka has acknowledged a message but before PostgreSQL records `published_at`.
+
+In that scenario, the same event can be published again when the worker retries it.
+
+This behavior is expected.
+
+The architecture therefore uses:
+
+```text
+at-least-once delivery
++
+idempotent downstream processing
+```
+
+Event redelivery is allowed.
+
+Duplicate financial effects are not.
+
+### End-to-End Validation
+
+The Outbox Publisher has been validated against the real local infrastructure.
+
+The validated flow was:
+
+```text
+launch.outbox_event
+published_at = NULL
+        |
+        v
+CashFlow.Outbox Worker
+        |
+        v
+Kafka / entry-events
+        |
+        | broker acknowledgement
+        v
+launch.outbox_event
+published_at = timestamp
+```
+
+Before the Worker was executed:
+
+```text
+PostgreSQL pending events: 1
+Kafka messages:            0
+```
+
+After publication:
+
+```text
+Kafka messages:            1
+PostgreSQL published_at:   recorded
+```
+
+The produced Kafka message was also inspected through Kafka UI, confirming the expected `EntryId` message key and serialized `EntryCreated` payload.
+
+This validates the implemented path from durable transactional persistence to asynchronous event publication.
 
 ---
 
@@ -456,7 +592,7 @@ The observability foundation includes OpenTelemetry integration for:
 - distributed traces
 - metrics
 
-This provides the basis for correlating future flows across:
+This provides the basis for correlating the complete processing flow:
 
 ```text
 Entry API
@@ -561,20 +697,26 @@ These documents capture both implemented decisions and explicitly documented evo
 
 ## Next Implementation Step
 
-The next component is the Outbox Publisher.
+The next component is the Consolidation Processor.
 
 Its responsibility is to:
 
 ```text
-read unpublished launch.outbox_event records
+consume EntryCreated events from Kafka
         |
         v
-publish them to Kafka / entry-events
+detect previously processed EventId
         |
         v
-mark successfully published records
+atomically
+        ├── update daily consolidation
+        └── register processed EventId
 ```
 
-Publication is intentionally independent from the Entry API.
+The consumer will operate under at-least-once delivery semantics.
 
-This preserves the central resilience requirement of the architecture: failure of the asynchronous consolidation pipeline must not prevent financial entries from being durably accepted.
+Duplicate event delivery is allowed, but duplicate financial effects are not.
+
+`ProcessedEvent` registration and the `DailyConsolidation` update will therefore occur in the same PostgreSQL transaction.
+
+After the Consolidation Processor, the final business application will expose the materialized daily consolidation through the Consolidation Query API.
