@@ -13,6 +13,7 @@
   <ItemGroup>
     <ProjectReference Include="..\CashFlow.Entry.Core\CashFlow.Entry.Core.csproj" />
     <ProjectReference Include="..\..\..\CashFlow.ServiceDefaults\CashFlow.ServiceDefaults.csproj" />
+    <ProjectReference Include="..\CashFlow.Entry.Repository\CashFlow.Entry.Repository.csproj" />
   </ItemGroup>
 
 </Project>
