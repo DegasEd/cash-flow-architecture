@@ -4,6 +4,7 @@ using CashFlow.ConsolidationQuery.Repository;
 using CashFlow.ConsolidationQuery.Repository.Interfaces;
 
 var builder = WebApplication.CreateBuilder(args);
+builder.AddServiceDefaults();
 
 builder.Services.AddOpenApi();
 builder.Services.AddControllers();
@@ -26,5 +27,6 @@ if (app.Environment.IsDevelopment())
 }
 
 app.MapControllers();
+app.MapDefaultEndpoints();
 
 app.Run();

@@ -6,6 +6,7 @@ using CashFlow.Outbox.Repository.Interfaces;
 using CashFlow.Outbox.Worker;
 
 var builder = Host.CreateApplicationBuilder(args);
+builder.AddServiceDefaults();
 
 var connectionString =
     builder.Configuration.GetConnectionString("PostgreSql")

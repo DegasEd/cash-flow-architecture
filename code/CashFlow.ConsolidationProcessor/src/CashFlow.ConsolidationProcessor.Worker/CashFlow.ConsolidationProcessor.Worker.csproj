@@ -15,5 +15,6 @@
   <ItemGroup>
     <ProjectReference Include="..\CashFlow.ConsolidationProcessor.Core\CashFlow.ConsolidationProcessor.Core.csproj" />
     <ProjectReference Include="..\CashFlow.ConsolidationProcessor.Repository\CashFlow.ConsolidationProcessor.Repository.csproj" />
+    <ProjectReference Include="..\..\..\CashFlow.ServiceDefaults\CashFlow.ServiceDefaults.csproj" />
   </ItemGroup>
 </Project>

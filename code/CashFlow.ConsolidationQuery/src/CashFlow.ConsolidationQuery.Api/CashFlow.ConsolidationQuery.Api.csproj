@@ -13,6 +13,7 @@
   <ItemGroup>
     <ProjectReference Include="..\CashFlow.ConsolidationQuery.Core\CashFlow.ConsolidationQuery.Core.csproj" />
     <ProjectReference Include="..\CashFlow.ConsolidationQuery.Repository\CashFlow.ConsolidationQuery.Repository.csproj" />
+    <ProjectReference Include="..\..\..\CashFlow.ServiceDefaults\CashFlow.ServiceDefaults.csproj" />
   </ItemGroup>
 
 </Project>
