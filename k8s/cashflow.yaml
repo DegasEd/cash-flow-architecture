@@ -1,0 +1,223 @@
+# ============================================================
+# Cash Flow Architecture - Kubernetes Lab
+#
+# Application workloads run inside Minikube.
+# PostgreSQL and Kafka remain in Docker Compose on the host.
+# ============================================================
+
+# ============================================================
+# Entry API
+# ============================================================
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: entry
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: entry
+  template:
+    metadata:
+      labels:
+        app: entry
+    spec:
+      containers:
+        - name: entry
+          image: cashflow-entry:local
+          imagePullPolicy: Never
+          ports:
+            - containerPort: 8080
+          env:
+            - name: ConnectionStrings__PostgreSql
+              value: "Host=host.minikube.internal;Port=5432;Database=cashflow;Username=cashflow;Password=cashflow"
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: entry
+spec:
+  selector:
+    app: entry
+  ports:
+    - port: 80
+      targetPort: 8080
+
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: entry
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: entry
+  minReplicas: 1
+  maxReplicas: 5
+  behavior:
+    scaleDown:
+      stabilizationWindowSeconds: 60
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 50
+
+# ============================================================
+# Outbox Worker
+# ============================================================
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: outbox
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: outbox
+  template:
+    metadata:
+      labels:
+        app: outbox
+    spec:
+      containers:
+        - name: outbox
+          image: cashflow-outbox:local
+          imagePullPolicy: Never
+          env:
+            - name: ConnectionStrings__PostgreSql
+              value: "Host=host.minikube.internal;Port=5432;Database=cashflow;Username=cashflow;Password=cashflow"
+            - name: Kafka__BootstrapServers
+              value: "host.minikube.internal:9092"
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi
+
+# ============================================================
+# Consolidation Processor
+# ============================================================
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: consolidation-processor
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: consolidation-processor
+  template:
+    metadata:
+      labels:
+        app: consolidation-processor
+    spec:
+      containers:
+        - name: consolidation-processor
+          image: cashflow-consolidation-processor:local
+          imagePullPolicy: Never
+          env:
+            - name: ConnectionStrings__PostgreSql
+              value: "Host=host.minikube.internal;Port=5432;Database=cashflow;Username=cashflow;Password=cashflow"
+            - name: Kafka__BootstrapServers
+              value: "host.minikube.internal:9092"
+            - name: Kafka__GroupId
+              value: "cashflow-consolidation"
+            - name: Kafka__Topic
+              value: "entry-events"
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi
+
+# ============================================================
+# Consolidation Query API
+# ============================================================
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: consolidation-query
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: consolidation-query
+  template:
+    metadata:
+      labels:
+        app: consolidation-query
+    spec:
+      containers:
+        - name: consolidation-query
+          image: cashflow-consolidation-query:local
+          imagePullPolicy: Never
+          ports:
+            - containerPort: 8080
+          env:
+            - name: ConnectionStrings__PostgreSql
+              value: "Host=host.minikube.internal;Port=5432;Database=cashflow;Username=cashflow;Password=cashflow"
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: consolidation-query
+spec:
+  selector:
+    app: consolidation-query
+  ports:
+    - port: 80
+      targetPort: 8080
+
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: consolidation-query
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: consolidation-query
+  minReplicas: 1
+  maxReplicas: 5
+  behavior:
+    scaleDown:
+      stabilizationWindowSeconds: 60
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 50

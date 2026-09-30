@@ -1,0 +1,19 @@
+<Project Sdk="Aspire.AppHost.Sdk/13.6.0">
+
+  <ItemGroup>
+    <ProjectReference Include="..\CashFlow.Entry\src\CashFlow.Entry.Api\CashFlow.Entry.Api.csproj" />
+    <ProjectReference Include="..\CashFlow.Outbox\src\CashFlow.Outbox.Worker\CashFlow.Outbox.Worker.csproj" />
+    <ProjectReference Include="..\CashFlow.ConsolidationProcessor\src\CashFlow.ConsolidationProcessor.Worker\CashFlow.ConsolidationProcessor.Worker.csproj" />
+    <ProjectReference Include="..\CashFlow.ConsolidationQuery\src\CashFlow.ConsolidationQuery.Api\CashFlow.ConsolidationQuery.Api.csproj" />
+  </ItemGroup>
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <AspireUseCliBundle>true</AspireUseCliBundle>
+    <UserSecretsId>9aaeed70-8cb6-4e7e-bc11-dd94d6f670e5</UserSecretsId>
+  </PropertyGroup>
+
+</Project>

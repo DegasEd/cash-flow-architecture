@@ -1,0 +1,14 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <ItemGroup>
+    <ProjectReference Include="..\CashFlow.ConsolidationQuery.Repository\CashFlow.ConsolidationQuery.Repository.csproj" />
+    <ProjectReference Include="..\CashFlow.ConsolidationQuery.Domain\CashFlow.ConsolidationQuery.Domain.csproj" />
+  </ItemGroup>
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+
+</Project>
