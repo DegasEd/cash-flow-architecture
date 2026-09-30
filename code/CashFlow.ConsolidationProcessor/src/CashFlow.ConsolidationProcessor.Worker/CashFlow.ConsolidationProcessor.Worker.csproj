@@ -1,0 +1,20 @@
+<Project Sdk="Microsoft.NET.Sdk.Worker">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <UserSecretsId>dotnet-CashFlow.ConsolidationProcessor.Worker-caf2c1ee-c9ac-40bb-b1b0-688caa9f0fea</UserSecretsId>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Confluent.Kafka" Version="2.15.1" />
+    <PackageReference Include="Microsoft.Extensions.Hosting" Version="10.0.12" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\CashFlow.ConsolidationProcessor.Core\CashFlow.ConsolidationProcessor.Core.csproj" />
+    <ProjectReference Include="..\CashFlow.ConsolidationProcessor.Repository\CashFlow.ConsolidationProcessor.Repository.csproj" />
+    <ProjectReference Include="..\..\..\CashFlow.ServiceDefaults\CashFlow.ServiceDefaults.csproj" />
+  </ItemGroup>
+</Project>
